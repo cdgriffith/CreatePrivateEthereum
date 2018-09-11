@@ -14,12 +14,26 @@ Note : Open your wallet after starting your blockchain
  * ./pgeth.py stop: this functions stops geth. Use it not to burn your CPU on stupid blocks.
  * ./pgeth.py destroy: A function to delete quickly your private blockchain.
 
- ## Private key
+## Config
 
-Initial password set to "apasswordtochange" in mypassword.txt
+You can create a pgeth_config.json file (or created for you on first run) with 
+the following keys:
+
+* datadir  : Location of where to put all required files and chaindata
+* password : secret key password to use
+* geth     : location of geth executable 
+
+Example: 
+
+```
+{
+  "datadir": "~/private_ethereum_blockchain",
+  "password": "apasswordtochange"
+}
+```
 
 ## Contributors
 
 Laurent MALLET
 Regis PIETRASZEWSKI
-
+Chris Griffith (cdgriffith)

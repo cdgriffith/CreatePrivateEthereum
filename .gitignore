@@ -2,3 +2,4 @@
 .git
 mypassword.txt
 geth.logs
+pgeth_config.json

@@ -231,35 +231,6 @@ def init_account():
     subprocess.call(create_account_cmd)
 
 
-def check_if_geth_is_running_nix():
-    """Check if there is any geth process running using ps command"""
-    try:
-        cmd = "ps ax | grep 'geth ' | grep -v \"grep\""
-        logger.debug(cmd)
-        res = subprocess.check_output(cmd, shell=True).encode('utf-8')
-        num_processes = len(res.split('\n')) - 1
-        return num_processes > 0
-    except subprocess.CalledProcessError as err:
-        logging.error("Could not run ps command: {}".format(err))
-        return False
-
-
-def check_if_geth_is_running_windows():
-    """Check if there is any geth process running using tasklist command"""
-    try:
-        res = subprocess.check_output('tasklist /fi "imagename eq geth.exe"').encode('utf-8')
-    except subprocess.CalledProcessError as err:
-        logging.error("Could not run tasklist command: {}".format(err))
-        return False
-    else:
-        if "No tasks are running" in res:
-            return False
-        elif "geth.exe" in res:
-            return True
-        logging.error("Could not interpret tasklist results")
-        return False
-
-
 def is_geth_running():
     """Check if there is a geth running"""
     return file_exists(PIDFILE)
@@ -362,4 +333,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not vars(args):
         parser.print_usage()
+    else:
+        args.func(args)
 
