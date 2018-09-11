@@ -15,9 +15,21 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
-__version__ = '1.0.0'
+__version__ = '1.1.0'
 
-"""
+import sys
+import argparse
+import subprocess
+import json
+import os
+import shutil
+import logging
+import platform
+import re
+import tempfile
+import signal
+
+DESCRIPTION = """
 Create Private Ethereum Blockchain
  by ellis2323 & regispietra
  https://github.com/regispietra/CreatePrivateEthereum
@@ -39,22 +51,18 @@ This script pilots geth to provide easy functions:
 
 """
 
+logger = logging.getLogger('pgeth')
 
-import sys
-import argparse
-import subprocess
-import json
-import os
-import shutil
-import logging
-import platform
-import re
 
 # const in python
-PIDFILE = "/tmp/geth.pid"
+PIDFILE = os.path.join(tempfile.gettempdir(), "geth.pid")
+CONFIG_FILE = "pgeth_config.json"
+DEFAULT_CONFIG = {
+  "datadir": os.path.join(os.path.expanduser("~"), "private_ethereum_blockchain"),
+  "password": "apasswordtochange"
+}
 
-# alloc with 1000 ethers
-GENESIS = u"""{
+GENESIS = {
  "config": {
      "chainId": 15
   },
@@ -67,48 +75,47 @@ GENESIS = u"""{
   "mixhash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0x0000000000000000000000000000000000000000",
   "alloc": {
-      "0x$ADDRESS$": { "balance": "1000000000000000000000" }
   }
-}"""
+}
 
-def load_config_keys(key):
-    """ doc """
-    try:
-        file = open("pgeth_config.json", "r")
-        txt = file.read()
-        file.close()
-        d = json.loads(txt)
-    except:
-        logging.error("invalid config file")
-        logging.error("please use and modify the pgeth_config.json (https://github.com/regispietra/CreatePrivateEthereum)")
-        sys.exit(-1)
-    if d.has_key(key):
-        return d[key]
-    return None
 
-def getDataDir():
+def load_config_key(key):
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE) as cfg:
+                data = json.load(cfg)
+        except OSError:
+            logger.exception("Error reading config file")
+        else:
+            return data.get(key)
+    logger.error("No config file exists, creating default config")
+    with open(CONFIG_FILE, 'w') as cfg:
+        json.dump(DEFAULT_CONFIG, cfg, indent=2)
+    return DEFAULT_CONFIG.get(key)
+
+
+def get_data_dir():
     """Load datadir key and expand it"""
-    datadir = load_config_keys("datadir")
-    datadir = os.path.expanduser(datadir)
-    return datadir
+    return os.path.expanduser(load_config_key("datadir"))
 
-def getIpcDir():
+
+def get_ipc_dir():
     """Create default ipc path"""
     pl = platform.system()
-    ipcdir = "~/.ethereum/geth.ipc"
-    if pl == "Darwin":
-        ipcdir = "~/Library/Ethereum/geth.ipc"
-    elif pl == "Windows":
-        ipcdir = "~/AppData/Roaming/Ethereum/geth.ipc"
-    elif pl == "Linux":
-        ipcdir = "~/.ethereum/geth.ipc"
-    else:
-        logging.error('Platform unknown %s. Contact devs at iopixel dot com', platform)
-        sys.exit(-1)
-    ipcdir = os.path.expanduser(ipcdir)
+    ipc_dirs = {
+        "Darwin": "~/Library/Ethereum/geth.ipc",
+        "Windows": "~\\AppData\\Roaming\\Ethereum\\geth.ipc",
+        "Linux": "~/.ethereum/geth.ipc"
+    }
+    if pl not in ipc_dirs:
+        logger.error('Platform unknown "%s". Contact devs at iopixel.com', platform)
+        return sys.exit(-1)
+
+    ipcdir = os.path.expanduser(ipc_dirs[pl])
     return ipcdir
 
-def checkDir(path):
+
+def directory_exists(path):
     """Check the path exists and it is a directory"""
     if not os.path.exists(path):
         return False
@@ -116,7 +123,8 @@ def checkDir(path):
         return False
     return True
 
-def checkExe(path):
+
+def file_exists(path):
     """Check the path exists and it is a file"""
     if not os.path.exists(path):
         return False
@@ -124,241 +132,234 @@ def checkExe(path):
         return False
     return True
 
-def checkFile(path):
-    """Check the path exists and it is a file"""
-    if not os.path.exists(path):
-        return False
-    if not os.path.isfile(path) and os.access(path, os.X_OK):
-        return False
-    return True
 
-def checkGethCommand():
-    """Search Geth command"""
-    geth = load_config_keys("geth")
+def check_geth_command():
+    """Search for the geth executable"""
+    geth = load_config_key("geth")
     if geth:
-        if checkExe(geth):
+        if file_exists(geth):
             return geth
-        logging.error("invalid geth path in config file")
-        sys.exit(-1)
-    stdpaths = [ "/usr/bin/geth", "/usr/local/bin/geth", "/opt/local/bin/geth" ]
-    for p in stdpaths:
-        if checkExe(p):
+        logger.error("invalid geth path in config file")
+        return sys.exit(-1)
+    standard_paths = ["/usr/bin/geth", "/usr/local/bin/geth", "/opt/local/bin/geth"]
+    if platform.system() == 'Windows':
+        standard_paths = ["C:\Program Files\Geth\geth.exe"]
+    for p in standard_paths:
+        if file_exists(p):
             return p
-    logging.error("no geth found in classic path. Use the geth param in the config file")
+    logger.error("no geth found in classic path. Use the geth param in the config file")
     sys.exit(0)
 
-def strCommand(cmd):
+
+def log_command(cmd, level=logging.DEBUG):
     """cmd ie list of word into a string"""
-    return " ".join(cmd)
+    return logger.log(level, " ".join(cmd))
+
 
 def test(args):
-    return getAddress()
+    return get_address()
 
-def destroyPrivateBlochain():
+
+def destroy_private_blockchain():
     """Destroy your private blockchain"""
-    datadir = getDataDir()
-    if not checkDir(datadir):
-        logging.error("nothing to destroy. There is no %s directory" % datadir)
-        sys.exit(-1)
-    chaindata = os.path.join(datadir, "chaindata")
-    keystore = os.path.join(datadir, "keystore")
-    dapp = os.path.join(datadir, "dapp")
-    nodekey = os.path.join(datadir, "nodekey")
-    dsstore = os.path.join(datadir, ".DS_Store")
-    ipcfile = os.path.join(datadir, "geth.ipc")
-    if checkDir(chaindata):
-        shutil.rmtree(chaindata)
-    if checkDir(keystore):
-        shutil.rmtree(keystore)
-    if checkDir(dapp):
-        shutil.rmtree(dapp)
-    if checkDir(dsstore):
-        shutil.rmtree(dsstore)
-    if checkFile(nodekey):
-        os.remove(nodekey)
-    if checkFile(ipcfile):
-        os.remove(ipcfile)
-    try:
-        os.rmdir(datadir)
-    except:
-        logging.error("We do not destroy %s directory because there is something not standard in it.\nRemove the directory after checks" % datadir)
-        sys.exit(-1)
+    data_dir = get_data_dir()
+    if not directory_exists(data_dir):
+        logger.error("nothing to destroy. There is no {} directory".format(data_dir))
+        return sys.exit(-1)
 
-def getAddress():
+    folders = ['chaindata', 'keystore', 'dapp', 'geth', '.DS_Store']
+    files = ['nodekey', 'geth.ipc', 'genesis.json', 'mypassword.txt']
+
+    for folder in folders:
+        shutil.rmtree(os.path.join(data_dir, folder), ignore_errors=True)
+
+    for file_path in files:
+        try:
+            os.remove(os.path.join(data_dir, file_path))
+        except OSError:
+            pass
+
+    try:
+        os.rmdir(data_dir)
+    except OSError:
+        logger.error("We did not destroy {} directory because there is "
+                     "something not standard in it.\n"
+                     "\tRemove the directory manually "
+                     "after checking it's contents".format(data_dir))
+        return sys.exit(-1)
+
+
+def get_address():
     """Get the address of the account 0"""
-    datadir = getDataDir()
-    geth = checkGethCommand()
-    options = [ "--datadir", datadir ]
-    cmdListAccounts = [ geth ] + options + ["account", "list"]
-    logging.debug("cmd: " + strCommand(cmdListAccounts))
-    res = subprocess.check_output(cmdListAccounts)
-    accountQty = len(res.split('\n')) - 1
-    if accountQty == 0:
+    datadir = get_data_dir()
+    geth = check_geth_command()
+    options = ["--datadir", datadir]
+    list_accounts_cmd = [geth] + options + ["account", "list"]
+    logger.debug("cmd: " + " ".join(list_accounts_cmd))
+    res = subprocess.check_output(list_accounts_cmd).decode('utf-8')
+    num_accounts = len(res.split('\n')) - 1
+    if not num_accounts:
         return None
     line = res.split('\n')[0]
     regexp = re.search(u"{([0-9abcdefABCDEF]+)}", line)
-    if regexp == None:
-        logging.error("No address found in keystore")
-        sys.exit(-1)
+    if regexp is None:
+        logger.error("No address found in keystore")
+        return sys.exit(-1)
     result = regexp.group(1)
-    logging.debug('adress found: 0x' + result)
+    logger.debug('adress found: 0x' + result)
     return result
 
 
-def initAccount():
+def init_account():
     """List accounts. Create a default one if there is none"""
-    datadir = getDataDir()
-    geth = checkGethCommand()
-    options = [ "--datadir", datadir ]
-    cmdListAccounts = [ geth ] + options + ["account", "list"]
-    logging.debug("cmd: " + strCommand(cmdListAccounts))
-    res = subprocess.check_output(cmdListAccounts)
-    accountQty = len(res.split('\n')) - 1
-    # check account qty
-    if accountQty > 0:
-        return
-    # create mypassword.txt
-    f = open("mypassword.txt", "w")
-    f.write(load_config_keys("password"))
-    f.close()
-    # create an account
-    cmdCreateAccount = [ geth ] + options + [ "--password", "mypassword.txt", "account", "new" ]
-    logging.debug("cmd: " + strCommand(cmdCreateAccount))
-    subprocess.call(cmdCreateAccount)
+    data_dir = get_data_dir()
+    geth = check_geth_command()
+    options = ["--datadir", data_dir]
+    list_accounts_cmd = [geth] + options + ["account", "list"]
+    log_command(list_accounts_cmd)
+    res = subprocess.check_output(list_accounts_cmd).decode('utf-8')
+    num_accounts = len(res.split('\n')) - 1
 
-def checkIfGethIsRunningByGrep():
-    """Check if there is a geth running"""
+    if num_accounts > 0:
+        return
+
+    with open(os.path.join(data_dir, "mypassword.txt"), "w") as pass_file:
+        pass_file.write(load_config_key("password"))
+    # create an account
+    create_account_cmd = [geth] + options + ["--password", os.path.join(data_dir, "mypassword.txt"), "account", "new"]
+    log_command(create_account_cmd)
+    subprocess.call(create_account_cmd)
+
+
+def check_if_geth_is_running_nix():
+    """Check if there is any geth process running using ps command"""
     try:
         cmd = "ps ax | grep 'geth ' | grep -v \"grep\""
-        logging.debug(cmd)
-        res = subprocess.check_output(cmd, shell=True)
-        processQty = len(res.split('\n')) - 1
-        return True
-    except subprocess.CalledProcessError:
+        logger.debug(cmd)
+        res = subprocess.check_output(cmd, shell=True).encode('utf-8')
+        num_processes = len(res.split('\n')) - 1
+        return num_processes > 0
+    except subprocess.CalledProcessError as err:
+        logging.error("Could not run ps command: {}".format(err))
         return False
 
-def checkIfGethIsRunning():
+
+def check_if_geth_is_running_windows():
+    """Check if there is any geth process running using tasklist command"""
+    try:
+        res = subprocess.check_output('tasklist /fi "imagename eq geth.exe"').encode('utf-8')
+    except subprocess.CalledProcessError as err:
+        logging.error("Could not run tasklist command: {}".format(err))
+        return False
+    else:
+        if "No tasks are running" in res:
+            return False
+        elif "geth.exe" in res:
+            return True
+        logging.error("Could not interpret tasklist results")
+        return False
+
+
+def is_geth_running():
     """Check if there is a geth running"""
-    if checkFile(PIDFILE):
-        return True
-    return False
+    return file_exists(PIDFILE)
 
-def importKeys():
-    """ """
-    pass
-
-def importContracts():
-    """ """
-    pass
 
 def init(args):
     """init command"""
     # account management
-    initAccount()
+    init_account()
+
     # init needed if there is no chaindata dir
-    datadir = getDataDir()
-    if checkDir(os.path.join(datadir, 'chaindata')):
+    data_dir = get_data_dir()
+    if (directory_exists(os.path.join(data_dir, 'chaindata')) or
+            directory_exists(os.path.join(data_dir, 'geth', 'chaindata'))):
         return
-    geth = checkGethCommand()
-    options = [ "--datadir", datadir, "--networkid", "100" ]
+    geth = check_geth_command()
+
     # create the json genesis
-    address = getAddress()
-    txt = GENESIS.replace("$ADDRESS$", address)
-    f = open("genesis.json", "w")
-    f.write(txt)
-    f.close()
-    # launch the blockchain with the CustomGenesis.json file
-    cmdInit = [ geth ] + options + [ "init", "genesis.json"]
-    logging.debug("cmd: " + strCommand(cmdInit))
-    subprocess.call(cmdInit) 
+    address = get_address()
+    GENESIS['alloc']["0x{}".format(address)] = {"balance": "1000000000000000000000"}
+    genesis_file = os.path.join(data_dir, "genesis.json")
+    with open(genesis_file, "w") as gen:
+        json.dump(GENESIS, gen, indent=2)
+
+    # launch the blockchain with the CustomGenesis json file
+    init_cmd = [geth, "--datadir", data_dir, "--networkid", "100", "init", genesis_file]
+    log_command(init_cmd)
+    subprocess.call(init_cmd)
+
 
 def start(args):
     """start the geth daemon"""
     # check if there is a PID File
-    if checkIfGethIsRunning():
-        logging.error("geth must already be running (If not remove the %s file)" % PIDFILE)        
+    if is_geth_running():
+        logger.error("geth must already be running (If not remove the %s file)" % PIDFILE)
         sys.exit(1)
     # start geth with mining
-    datadir = load_config_keys("datadir")
-    geth = checkGethCommand()
-    options = [ "--datadir", datadir, "--networkid", "100", "--nodiscover", "--nat", "none", "--mine", "--minerthreads", "1", "--ipcpath", getIpcDir() ]
-    options += [ "--rpc", "--rpcport", "8545", "--rpcapi", "'web3,eth,debug,net,shh'", "--rpccorsdomain",  "'*'" ];
-    cmdStart = [ geth ] + options
-    logging.debug("cmd: " + strCommand(cmdStart))
+    data_dir = load_config_key("datadir")
+    geth = check_geth_command()
+    options = ["--datadir", data_dir, "--networkid", "100", "--nodiscover", "--nat", "none", "--mine", "--minerthreads",
+               "1", "--ipcpath", get_ipc_dir()]
+    options += ["--rpc", "--rpcport", "8545", "--rpcapi", "'web3,eth,debug,net,shh'", "--rpccorsdomain", "'*'"]
+    start_cmd = [geth] + options
+    log_command(start_cmd)
     logfile = open("geth.logs", "w")
-    process = subprocess.Popen(cmdStart, stdout=logfile, stderr=logfile)
+    process = subprocess.Popen(start_cmd, stdout=logfile, stderr=logfile)
     # write the the pid file
-    pidfile = open(PIDFILE, "w")
-    pidfile.write(str(process.pid))
-    pidfile.close()
-    logging.info("geth starting")
+    with open(PIDFILE, "w") as pid_file:
+        pid_file.write(str(process.pid))
+    logger.info("geth starting")
+
 
 def stop(args):
     """stop the geth daemon"""
     # check if there is a PID File
-    if not checkIfGethIsRunning():
-        logging.error("geth not running (because there is no %s file)" % PIDFILE)        
-        sys.exit(1)
+    if not is_geth_running():
+        logger.warning("geth is not running")
+        return
     # read the pid file
-    pidfile = open(PIDFILE, "r")
-    text = pidfile.read()
-    pidfile.close()
+    with open(PIDFILE, "r") as pidfile:
+        pid = int(pidfile.read().strip())
     try:
-        pid = int(text)
-    except e:
-        sys.stderr.write("Invalid %s file)\n" % PIDFILE)
-    try:
-        os.kill(pid, 1)
+        os.kill(pid, signal.SIGTERM)
+    except OSError as err:
+        pass
     finally:
+        logger.info("geth is shutting down")
         os.remove(PIDFILE)
-    logging.info("geth stopping")
+
 
 def destroy(args):
     """destroy your private blockchain"""
-    destroyPrivateBlochain()
+    destroy_private_blockchain()
 
-
-def import_(args):
-    """fsdf"""
-    if not vars(args).has_key("type_"):
-        logging.error("Specify contacts or keys")
-        sys.exit(-1)
-    type_ = vars(args)['type_'][0]
-    if type_ == "contracts":
-        importContracts()
-    elif  type_ == "keys":
-        importKeys()
-    else:
-        logging.error("Specify contracts or keys")
-        sys.exit(-1)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s %(message)s', datefmt='%m/%d/%Y %I:%M:%S')
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s %(levelname)s %(message)s',
+                        datefmt='%m/%d/%Y %I:%M:%S')
 
-    parser = argparse.ArgumentParser(description = 'to be completed')
+    parser = argparse.ArgumentParser(usage=DESCRIPTION)
 
-    parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
     init_parser = subparsers.add_parser('init')
-    init_parser.set_defaults(func = init)
+    init_parser.set_defaults(func=init)
 
     start_parser = subparsers.add_parser('start')
-    start_parser.set_defaults(func = start)
+    start_parser.set_defaults(func=start)
 
     stop_parser = subparsers.add_parser('stop')
-    stop_parser.set_defaults(func = stop)
+    stop_parser.set_defaults(func=stop)
 
     destroy_parser = subparsers.add_parser('destroy')
-    destroy_parser.set_defaults(func = destroy)
-
-    import_parser = subparsers.add_parser('import')
-    import_parser.add_argument('type_', nargs=1, help='keys or contracts')
-    import_parser.set_defaults(func = import_)
+    destroy_parser.set_defaults(func=destroy)
 
     test_parser = subparsers.add_parser('test')
-    test_parser.set_defaults(func = test)
-
+    test_parser.set_defaults(func=test)
 
     args = parser.parse_args()
-    args.func(args)  # call the default function
+    if not vars(args):
+        parser.print_usage()
+
